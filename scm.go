@@ -1,4 +1,4 @@
-// A little Scheme in Go 1.12 v0.1 H31.03.03 by SUZUKI Hisao
+// A little Scheme in Go 1.12 v0.2 H31.03.03/H31.03.07 by SUZUKI Hisao
 package main
 
 import (
@@ -31,29 +31,12 @@ func (j *Cell) String() string {
 	return Stringify(j, true)
 }
 
-// ForEach yields each element of the list of Cells.
-// cf. Enumerator in https://github.com/nukata/linq-in-go
-func (j *Cell) ForEach(yield func(element Any)) {
-	for j != Nil {
-		yield(j.Car)
-		if kdr, ok := j.Cdr.(*Cell); ok {
-			j = kdr
-		} else {
-			panic(&ImproperListError{j.Cdr})
-		}
-	}
-}
-
-type ImproperListError struct {
-	LastElement Any
-}
-
 //----------------------------------------------------------------------
 
 // Symbol represents Scheme's symbol.
 type Symbol string
 
-// The mappig from string to *Symbol
+// The mapping from string to *Symbol
 var Symbols sync.Map
 
 // Intern interns a name as a symbol.
@@ -94,32 +77,36 @@ type Cont struct {
 // NoCont means there is no continuation.
 var NoCont = &Cont{}
 
+// Void means the expresssion has no value.
+var Void = &struct{}{}
+
 // Stringify returns the string representation of an expression.
 // Strings in the expression will be quoted if quote is true.
 func Stringify(exp Any, quote bool) (result string) {
-	if exp == true {
+	switch exp {
+	case true:
 		return "#t"
-	} else if exp == false {
+	case false:
 		return "#f"
+	case scanner.EOF: // rune(-1)
+		return "#<EOF>"
+	case Void:
+		return "#<VOID>"
 	}
 	switch x := exp.(type) {
 	case *Cell:
 		ss := make([]string, 0, 100)
-		defer func() {
-			if err := recover(); err != nil {
-				if ile, ok := err.(*ImproperListError); ok {
-					ss = append(ss, ".")
-					ss = append(ss, Stringify(ile.LastElement, quote))
-				} else {
-					panic(err)
-				}
+		for x != Nil {
+			ss = append(ss, Stringify(x.Car, quote))
+			if kdr, ok := x.Cdr.(*Cell); ok {
+				x = kdr
+			} else {
+				ss = append(ss, ".")
+				ss = append(ss, Stringify(x.Cdr, quote))
+				break
 			}
-			result = "(" + strings.Join(ss, " ") + ")"
-		}()
-		x.ForEach(func(element Any) {
-			ss = append(ss, Stringify(element, quote))
-		})
-		return
+		}
+		return "(" + strings.Join(ss, " ") + ")"
 	case *Closure:
 		p := Stringify(x.Params, true)
 		b := Stringify(x.Body, true)
@@ -140,20 +127,20 @@ func Stringify(exp Any, quote bool) (result string) {
 
 //----------------------------------------------------------------------
 
-func c(car Any, cdr Any) *Cell {
-	return &Cell{car, cdr}
+func c(name string, fun func(*Cell) Any, next Environment) Environment {
+	return &Cell{&Cell{Intern(name), fun}, next}
 }
 
 var GlobalEnv Environment = c(
-	c(Intern("car"), func(x *Cell) Any {
+	"car", func(x *Cell) Any {
 		return x.Car.(*Cell).Car
-	}), c(c(Intern("cdr"), func(x *Cell) Any {
+	}, c("cdr", func(x *Cell) Any {
 		return x.Car.(*Cell).Cdr
-	}), c(c(Intern("cons"), func(x *Cell) Any {
-		return c(x.Car, x.Cdr.(*Cell).Car)
-	}), c(c(Intern("eq?"), func(x *Cell) Any {
+	}, c("cons", func(x *Cell) Any {
+		return &Cell{x.Car, x.Cdr.(*Cell).Car}
+	}, c("eq?", func(x *Cell) Any {
 		return x.Car == x.Cdr.(*Cell).Car
-	}), c(c(Intern("eqv?"), func(x *Cell) Any {
+	}, c("eqv?", func(x *Cell) Any {
 		a, b := x.Car, x.Cdr.(*Cell).Car
 		if a == b {
 			return true
@@ -166,43 +153,46 @@ var GlobalEnv Environment = c(
 			}
 		}
 		return false
-	}), c(c(Intern("pair?"), func(x *Cell) Any {
+	}, c("pair?", func(x *Cell) Any {
 		c, ok := x.Car.(*Cell)
 		return ok && c != Nil
-	}), c(c(Intern("null?"), func(x *Cell) Any {
+	}, c("null?", func(x *Cell) Any {
 		return x.Car == Nil
-	}), c(c(Intern("not"), func(x *Cell) Any {
+	}, c("not", func(x *Cell) Any {
 		return x.Car == false
-	}), c(c(Intern("list"), func(x *Cell) Any {
+	}, c("list", func(x *Cell) Any {
 		return x
-	}), c(c(Intern("display"), func(x *Cell) Any {
+	}, c("display", func(x *Cell) Any {
 		fmt.Print(Stringify(x.Car, false))
 		return Void
-	}), c(c(Intern("newline"), func(x *Cell) Any {
+	}, c("newline", func(x *Cell) Any {
 		fmt.Println()
 		return Void
-	}), c(c(Intern("read"), func(x *Cell) Any {
+	}, c("read", func(x *Cell) Any {
 		return ReadExpression("", "")
-	}), c(c(Intern("eof-object?"), func(x *Cell) Any {
-		return false // XXX
-	}), c(c(Intern("+"), func(x *Cell) Any {
+	}, c("eof-object?", func(x *Cell) Any {
+		return x.Car == scanner.EOF
+	}, c("symbol?", func(x *Cell) Any {
+		_, ok := x.Car.(*Symbol)
+		return ok
+	}, c("+", func(x *Cell) Any {
 		a, b := x.Car, x.Cdr.(*Cell).Car
 		return goarith.AsNumber(a).Add(goarith.AsNumber(b))
-	}), c(c(Intern("-"), func(x *Cell) Any {
+	}, c("-", func(x *Cell) Any {
 		a, b := x.Car, x.Cdr.(*Cell).Car
 		return goarith.AsNumber(a).Sub(goarith.AsNumber(b))
-	}), c(c(Intern("*"), func(x *Cell) Any {
+	}, c("*", func(x *Cell) Any {
 		a, b := x.Car, x.Cdr.(*Cell).Car
 		return goarith.AsNumber(a).Mul(goarith.AsNumber(b))
-	}), c(c(Intern("<"), func(x *Cell) Any {
+	}, c("<", func(x *Cell) Any {
 		a, b := x.Car, x.Cdr.(*Cell).Car
 		return goarith.AsNumber(a).Cmp(goarith.AsNumber(b)) < 0
-	}), c(c(Intern("="), func(x *Cell) Any {
+	}, c("=", func(x *Cell) Any {
 		a, b := x.Car, x.Cdr.(*Cell).Car
 		return goarith.AsNumber(a).Cmp(goarith.AsNumber(b)) == 0
-	}), c(c(CallCC, CallCC),
-		c(c(Apply, Apply),
-			Nil))))))))))))))))))))
+	}, &Cell{&Cell{CallCC, CallCC},
+		&Cell{&Cell{Apply, Apply},
+			Nil}})))))))))))))))))))
 
 //----------------------------------------------------------------------
 
@@ -253,9 +243,6 @@ func Evaluate(exp Any, env Environment, k *Cont) Any {
 		exp, env, k = applyCont(k, exp)
 	}
 }
-
-// Void means the expresssion has no value.
-var Void = &struct{}{}
 
 // applyCont applies a continuation to an expression.
 func applyCont(cont *Cont, exp Any) (Any, Environment, *Cont) {
@@ -428,8 +415,8 @@ func pop(tokens *[]Any) Any {
 	return result
 }
 
-// ReadFromTokens reads a Scheme expression from [tokens].
-// [tokens] will be left with the rest of tokens, if any.
+// ReadFromTokens reads a Scheme expression from tokens.
+// `tokens` will be left with the rest of tokens, if any.
 func ReadFromTokens(tokens *[]Any) Any {
 	token := pop(tokens)
 	switch token {

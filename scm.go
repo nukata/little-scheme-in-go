@@ -1,4 +1,4 @@
-// A little Scheme in Go 1.12 v0.3 H31.03.03/H31.03.07 by SUZUKI Hisao
+// A little Scheme in Go 1.12 v0.4 H31.03.03/H31.03.08 by SUZUKI Hisao
 package main
 
 import (
@@ -31,6 +31,15 @@ func (j *Cell) String() string {
 	return Stringify(j, true)
 }
 
+// Reverse builds a reversed list, e.g. (a b c d) => (d c b a)
+func (j *Cell) Reverse() *Cell {
+	result := Nil
+	for j != Nil {
+		j, result = j.Cdr.(*Cell), &Cell{j.Car, result}
+	}
+	return result
+}
+
 //----------------------------------------------------------------------
 
 // Symbol represents Scheme's symbol.
@@ -57,32 +66,55 @@ var CallCC = Intern("call/cc")
 
 //----------------------------------------------------------------------
 
-type Environment = *Cell
-
-// Closure represents a lambda expression with its environment.
-type Closure struct {
-	Params *Cell
-	Body   *Cell
-	Env    Environment
+// Environment represents Scheme's environment.
+type Environment struct {
+	Sym  *Symbol
+	Val  Any
+	Next *Environment
 }
+
+// LookFor searches the environment for a symbol.
+func (env *Environment) LookFor(key *Symbol) *Environment {
+	for env != nil {
+		if env.Sym == key {
+			return env
+		}
+		env = env.Next
+	}
+	panic(string(*key) + " not found")
+}
+
+// PrependDefs builds a new environment which prepends pairs of keys and data.
+func (env *Environment) PrependDefs(keys *Cell, data *Cell) *Environment {
+	if keys == Nil {
+		if data != Nil {
+			panic("surplus arg: " + Stringify(data, true))
+		}
+		return env
+	}
+	return &Environment{keys.Car.(*Symbol), data.Car,
+		env.PrependDefs(keys.Cdr.(*Cell), data.Cdr.(*Cell))}
+}
+
+//----------------------------------------------------------------------
 
 // Step represents Scheme's step in a continuation.
 type Step struct {
 	Op  *Symbol
 	Val Any
-	Env Environment
+	Env *Environment
 }
 
 // Continuation represents Scheme's continuation as a stack.
 type Continuation []Step
 
 // Push appends a step to the tail of the continuation.
-func (k *Continuation) Push(op *Symbol, value Any, env Environment) {
+func (k *Continuation) Push(op *Symbol, value Any, env *Environment) {
 	*k = append(*k, Step{op, value, env})
 }
 
 // Pop pops a step from the tail of the continuation.
-func (k *Continuation) Pop() (*Symbol, Any, Environment) {
+func (k *Continuation) Pop() (*Symbol, Any, *Environment) {
 	n := len(*k) - 1
 	step := (*k)[n]
 	*k = (*k)[:n]
@@ -97,6 +129,13 @@ func (k Continuation) Copy() Continuation {
 }
 
 //----------------------------------------------------------------------
+
+// Closure represents a lambda expression with its environment.
+type Closure struct {
+	Params *Cell
+	Body   *Cell
+	Env    *Environment
+}
 
 // Void means the expresssion has no value.
 var Void = &struct{}{}
@@ -156,11 +195,11 @@ func Stringify(exp Any, quote bool) (result string) {
 
 //----------------------------------------------------------------------
 
-func c(name string, fun func(*Cell) Any, next Environment) Environment {
-	return &Cell{&Cell{Intern(name), fun}, next}
+func c(name string, fun func(*Cell) Any, next *Environment) *Environment {
+	return &Environment{Intern(name), fun, next}
 }
 
-var GlobalEnv Environment = c(
+var GlobalEnv *Environment = c(
 	"car", func(x *Cell) Any {
 		return x.Car.(*Cell).Car
 	}, c("cdr", func(x *Cell) Any {
@@ -219,17 +258,17 @@ var GlobalEnv Environment = c(
 	}, c("=", func(x *Cell) Any {
 		a, b := x.Car, x.Cdr.(*Cell).Car
 		return goarith.AsNumber(a).Cmp(goarith.AsNumber(b)) == 0
-	}, &Cell{&Cell{CallCC, CallCC},
-		&Cell{&Cell{Apply, Apply},
-			Nil}})))))))))))))))))))
+	}, &Environment{CallCC, CallCC,
+		&Environment{Apply, Apply,
+			nil}})))))))))))))))))))
 
 //----------------------------------------------------------------------
 
 // Done means the expression has been evaluated.
-var Done Environment = &Cell{Nil, Nil}
+var Done *Environment = &Environment{nil, nil, nil}
 
-// Evaluate evaluates an expresssion with an environment and a continuation.
-func Evaluate(exp Any, env Environment) Any {
+// Evaluate evaluates an expresssion in an environment.
+func Evaluate(exp Any, env *Environment) Any {
 	k := make(Continuation, 0, 100)
 	for {
 		for env != Done {
@@ -252,16 +291,16 @@ func Evaluate(exp Any, env Environment) Any {
 					exp = kdr.Cdr.(*Cell).Car
 					k.Push(Define, kdr.Car.(*Symbol), env)
 				case SetQ: // (set! v e)
-					pair := lookForPair(kdr.Car.(*Symbol), env)
+					pair := env.LookFor(kdr.Car.(*Symbol))
 					exp = kdr.Cdr.(*Cell).Car
 					k.Push(SetQ, pair, env)
-				default:
+				default: // (fun arg...)
 					exp = kar
 					k.Push(Apply, &Cell{kdr, Nil}, env)
 				}
 			case *Symbol:
-				pair := lookForPair(x, env)
-				exp, env = pair.Cdr, Done
+				pair := env.LookFor(x)
+				exp, env = pair.Val, Done
 			default: // as a number, #t, #f etc.
 				env = Done
 			}
@@ -274,7 +313,7 @@ func Evaluate(exp Any, env Environment) Any {
 }
 
 // applyCont applies a continuation to an expression.
-func applyCont(k *Continuation, exp Any) (Any, Environment) {
+func applyCont(k *Continuation, exp Any) (Any, *Environment) {
 	op, x, env := k.Pop()
 	switch op {
 	case If: // x = (e2 e3)
@@ -283,9 +322,9 @@ func applyCont(k *Continuation, exp Any) (Any, Environment) {
 			if c.Cdr == Nil {
 				return Void, env
 			}
-			return c.Cdr.(*Cell).Car, env // (e3, env)
+			return c.Cdr.(*Cell).Car, env // e3, env
 		}
-		return c.Car, env // (e2, env)
+		return c.Car, env // e2, env
 	case Begin: //  x = (e...)
 		c := x.(*Cell)
 		if x == Nil {
@@ -294,18 +333,19 @@ func applyCont(k *Continuation, exp Any) (Any, Environment) {
 		k.Push(Begin, c.Cdr, env)
 		return c.Car, env
 	case Define: // x = v
-		env.Cdr = &Cell{env.Car, env.Cdr}
-		env.Car = &Cell{x, exp}
+		env.Next = &Environment{env.Sym, env.Val, env.Next}
+		env.Val = exp
+		env.Sym = x.(*Symbol)
 		return Void, Done
-	case SetQ: // x = (v . e)
-		c := x.(*Cell)
-		c.Cdr = exp
+	case SetQ: // x = &Environment{v, e, ...}
+		pair := x.(*Environment)
+		pair.Val = exp
 		return Void, Done
 	case Apply: // x = (arguments . evaluated)
 		c := x.(*Cell)
 		args, evaluated := c.Car.(*Cell), &Cell{exp, c.Cdr}
 		if args == Nil {
-			evaluated = reverse(evaluated)
+			evaluated = evaluated.Reverse()
 			return applyFunction(evaluated.Car, evaluated.Cdr.(*Cell), k)
 		}
 		k.Push(Apply, &Cell{args.Cdr, evaluated}, env)
@@ -314,8 +354,8 @@ func applyCont(k *Continuation, exp Any) (Any, Environment) {
 	panic("Bad " + Stringify(*k, true) + " for " + Stringify(exp, true))
 }
 
-// applyFunction applies a function to arguments with a a continuation.
-func applyFunction(fun Any, arg *Cell, k *Continuation) (Any, Environment) {
+// applyFunction applies a function to arguments with a continuation.
+func applyFunction(fun Any, arg *Cell, k *Continuation) (Any, *Environment) {
 	for {
 		if fun == CallCC {
 			fun, arg = arg.Car, &Cell{k.Copy(), Nil}
@@ -329,42 +369,13 @@ func applyFunction(fun Any, arg *Cell, k *Continuation) (Any, Environment) {
 	case func(*Cell) Any:
 		return fn(arg), Done
 	case *Closure:
-		env := prependPairs(fn.Params, arg, fn.Env)
+		env := fn.Env.PrependDefs(fn.Params, arg)
 		return &Cell{Begin, fn.Body}, env
 	case Continuation:
 		*k = fn.Copy()
 		return arg.Car, Done
 	}
 	panic(fmt.Sprintf("%v for %v is not a function", fun, arg))
-}
-
-// (a b c d) => (d c b a)
-func reverse(lst *Cell) *Cell {
-	result := Nil
-	for lst != Nil {
-		lst, result = lst.Cdr.(*Cell), &Cell{lst.Car, result}
-	}
-	return result
-}
-
-// b, ((a . 1) (b . 2) (c . 3)) => (b . 2)
-func lookForPair(key *Symbol, alist Environment) Environment {
-	for j := alist; j != Nil; j = j.Cdr.(*Cell) {
-		pair := j.Car.(*Cell)
-		if pair.Car == key {
-			return pair
-		}
-	}
-	panic(string(*key) + " not found")
-}
-
-// (a b), (1 2), x => ((a . 1) (b . 2) . x)
-func prependPairs(keys *Cell, data *Cell, alist Environment) Environment {
-	if keys == Nil {
-		return alist
-	}
-	return &Cell{&Cell{keys.Car, data.Car},
-		prependPairs(keys.Cdr.(*Cell), data.Cdr.(*Cell), alist)}
 }
 
 //----------------------------------------------------------------------
@@ -380,6 +391,7 @@ func tryToReadNumber(s string) (goarith.Number, bool) {
 	return nil, false
 }
 
+// SplitIntoTokens splits a source text into tokens.
 func SplitIntoTokens(src io.Reader) []Any {
 	result := make([]Any, 0, 100)
 	var scn scanner.Scanner

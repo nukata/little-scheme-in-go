@@ -1,4 +1,4 @@
-// A little Scheme in Go 1.12 v0.4 H31.03.03/H31.03.08 by SUZUKI Hisao
+// A little Scheme in Go 1.12 v0.5 H31.03.03/H31.03.10 by SUZUKI Hisao
 package main
 
 import (
@@ -29,15 +29,6 @@ var Nil *Cell = nil
 
 func (j *Cell) String() string {
 	return Stringify(j, true)
-}
-
-// Reverse builds a reversed list, e.g. (a b c d) => (d c b a)
-func (j *Cell) Reverse() *Cell {
-	result := Nil
-	for j != Nil {
-		j, result = j.Cdr.(*Cell), &Cell{j.Car, result}
-	}
-	return result
 }
 
 //----------------------------------------------------------------------
@@ -100,25 +91,24 @@ func (env *Environment) PrependDefs(keys *Cell, data *Cell) *Environment {
 
 // Step represents Scheme's step in a continuation.
 type Step struct {
-	Op  *Symbol
+	Op  int
 	Val Any
-	Env *Environment
 }
 
 // Continuation represents Scheme's continuation as a stack.
 type Continuation []Step
 
 // Push appends a step to the tail of the continuation.
-func (k *Continuation) Push(op *Symbol, value Any, env *Environment) {
-	*k = append(*k, Step{op, value, env})
+func (k *Continuation) Push(op int, value Any) {
+	*k = append(*k, Step{op, value})
 }
 
 // Pop pops a step from the tail of the continuation.
-func (k *Continuation) Pop() (*Symbol, Any, *Environment) {
+func (k *Continuation) Pop() (int, Any) {
 	n := len(*k) - 1
 	step := (*k)[n]
 	*k = (*k)[:n]
-	return step.Op, step.Val, step.Env
+	return step.Op, step.Val
 }
 
 // Copy copies the continuation.
@@ -167,18 +157,19 @@ func Stringify(exp Any, quote bool) (result string) {
 			}
 		}
 		return "(" + strings.Join(ss, " ") + ")"
+	case *Environment:
+		return fmt.Sprintf("#%p", x)
 	case *Closure:
 		p := Stringify(x.Params, true)
 		b := Stringify(x.Body, true)
-		e := fmt.Sprintf("#%p", x.Env)
+		e := Stringify(x.Env, true)
 		return "#<" + p + ":" + b + ":" + e + ">"
 	case Continuation:
 		ss := make([]string, 0, 100)
 		for _, step := range x {
-			p := string(*step.Op)
+			p := OpStr[step.Op]
 			v := Stringify(step.Val, true)
-			e := fmt.Sprintf("#%p", step.Env)
-			ss = append(ss, "<"+p+":"+v+":"+e+">")
+			ss = append(ss, "<"+p+":"+v+">")
 		}
 		return "#<" + strings.Join(ss, "\n\t") + ">"
 	case func(*Cell) Any:
@@ -264,98 +255,144 @@ var GlobalEnv *Environment = c(
 
 //----------------------------------------------------------------------
 
-// Done means the expression has been evaluated.
-var Done *Environment = &Environment{nil, nil, nil}
+// Continuation operators
+const (
+	IfOp = iota
+	BeginOp
+	LambdaOp
+	DefineOp
+	SetQOp
+	ApplyOp
+	FunCallOp
+	EvalArgOp
+	PushArgsOp
+	SetNewEnvOp
+	RestoreEnvOp
+)
+
+var OpStr = [...]string{
+	"If", "Begin", "Lambda", "Define", "SetQ", "Apply",
+	"FunCall", "EvalArg", "PushArgs", "SetNewEnv", "RestoreEnvOp",
+}
 
 // Evaluate evaluates an expresssion in an environment.
 func Evaluate(exp Any, env *Environment) Any {
 	k := make(Continuation, 0, 100)
 	for {
-		for env != Done {
+	Loop1:
+		for {
 			switch x := exp.(type) {
 			case *Cell:
 				kar, kdr := x.Car, x.Cdr.(*Cell)
 				switch kar {
 				case Quote: // (quote e)
-					exp, env = kdr.Car, Done
+					exp = kdr.Car
+					break Loop1
 				case If: // (if e1 e2 e3) or (if e1 e2)
 					exp = kdr.Car
-					k.Push(If, kdr.Cdr, env)
+					k.Push(IfOp, kdr.Cdr)
 				case Begin: // (begin e...)
 					exp = kdr.Car
-					k.Push(Begin, kdr.Cdr, env)
+					if kdr.Cdr != Nil {
+						k.Push(BeginOp, kdr.Cdr)
+					}
 				case Lambda: // (lambda (v...) e...)
 					exp = &Closure{kdr.Car.(*Cell), kdr.Cdr.(*Cell), env}
-					env = Done
-				case Define: // (define v e)
+					break Loop1
+				case Define: // (define var e)
 					exp = kdr.Cdr.(*Cell).Car
-					k.Push(Define, kdr.Car.(*Symbol), env)
-				case SetQ: // (set! v e)
+					k.Push(DefineOp, kdr.Car.(*Symbol))
+				case SetQ: // (set! var e)
 					pair := env.LookFor(kdr.Car.(*Symbol))
 					exp = kdr.Cdr.(*Cell).Car
-					k.Push(SetQ, pair, env)
+					k.Push(SetQOp, pair)
 				default: // (fun arg...)
 					exp = kar
-					k.Push(Apply, &Cell{kdr, Nil}, env)
+					k.Push(ApplyOp, kdr)
 				}
 			case *Symbol:
 				pair := env.LookFor(x)
-				exp, env = pair.Val, Done
+				exp = pair.Val
+				break Loop1
 			default: // as a number, #t, #f etc.
-				env = Done
+				break Loop1
 			}
 		}
-		if len(k) == 0 {
-			return exp
-		}
-		exp, env = applyCont(&k, exp)
-	}
-}
-
-// applyCont applies a continuation to an expression.
-func applyCont(k *Continuation, exp Any) (Any, *Environment) {
-	op, x, env := k.Pop()
-	switch op {
-	case If: // x = (e2 e3)
-		c := x.(*Cell)
-		if exp == false {
-			if c.Cdr == Nil {
-				return Void, env
+	Loop2:
+		for {
+			// fmt.Printf("_%d", len(k))
+			if len(k) == 0 {
+				return exp
 			}
-			return c.Cdr.(*Cell).Car, env // e3, env
-		}
-		return c.Car, env // e2, env
-	case Begin: //  x = (e...)
-		c := x.(*Cell)
-		if x == Nil {
-			return exp, Done
-		}
-		k.Push(Begin, c.Cdr, env)
-		return c.Car, env
-	case Define: // x = v
-		env.Next = &Environment{env.Sym, env.Val, env.Next}
-		env.Val = exp
-		env.Sym = x.(*Symbol)
-		return Void, Done
-	case SetQ: // x = &Environment{v, e, ...}
-		pair := x.(*Environment)
-		pair.Val = exp
-		return Void, Done
-	case Apply: // x = (arguments . evaluated)
-		c := x.(*Cell)
-		args, evaluated := c.Car.(*Cell), &Cell{exp, c.Cdr}
-		if args == Nil {
-			evaluated = evaluated.Reverse()
-			return applyFunction(evaluated.Car, evaluated.Cdr.(*Cell), k)
-		}
-		k.Push(Apply, &Cell{args.Cdr, evaluated}, env)
-		return args.Car, env
+			op, x := k.Pop()
+			switch op {
+			case IfOp: // x = (e2 e3)
+				j := x.(*Cell)
+				if exp == false {
+					if j.Cdr == Nil {
+						exp = Void
+					} else {
+						exp = j.Cdr.(*Cell).Car // e3
+						break Loop2
+					}
+				} else {
+					exp = j.Car // e2
+					break Loop2
+				}
+			case BeginOp: //  x = (e...)
+				j := x.(*Cell)
+				if j.Cdr != Nil { // unless tail call...
+					k.Push(BeginOp, j.Cdr)
+				}
+				exp = j.Car
+				break Loop2
+			case DefineOp: // x = var
+				env.Next = &Environment{env.Sym, env.Val, env.Next}
+				env.Val = exp
+				env.Sym = x.(*Symbol)
+				exp = Void
+			case SetQOp: // x = &Environment{var, e, ...}
+				pair := x.(*Environment)
+				pair.Val = exp
+				exp = Void
+			case ApplyOp: // exp = fun; x = arg...
+				j := x.(*Cell)
+				if j == Nil {
+					exp = applyFunction(exp, Nil, &k, env)
+				} else {
+					k.Push(FunCallOp, exp)
+					for j.Cdr != Nil {
+						k.Push(EvalArgOp, j.Car)
+						j = j.Cdr.(*Cell)
+					}
+					exp = j.Car
+					k.Push(PushArgsOp, Nil)
+					break Loop2
+				}
+			case PushArgsOp: // x = evaluated arg...
+				args := &Cell{exp, x}
+				op, exp = k.Pop()
+				if op == EvalArgOp { // exp = next arg
+					k.Push(PushArgsOp, args)
+					break Loop2
+				} else if op == FunCallOp { // exp = evaluated fun
+					exp = applyFunction(exp, args, &k, env)
+				} else {
+					panic("unexpected " + OpStr[op])
+				}
+			case SetNewEnvOp, RestoreEnvOp: // x = &Environment{...}
+				env = x.(*Environment)
+			default:
+				panic("Bad " + Stringify(k, true) +
+					" for " + Stringify(exp, true))
+			}
+		} // end Loop2
 	}
-	panic("Bad " + Stringify(*k, true) + " for " + Stringify(exp, true))
 }
 
 // applyFunction applies a function to arguments with a continuation.
-func applyFunction(fun Any, arg *Cell, k *Continuation) (Any, *Environment) {
+func applyFunction(fun Any, arg *Cell, k *Continuation, env *Environment) Any {
+	// fmt.Println("\t-- %s", Stringify(*k, true))
 	for {
 		if fun == CallCC {
 			fun, arg = arg.Car, &Cell{k.Copy(), Nil}
@@ -367,13 +404,18 @@ func applyFunction(fun Any, arg *Cell, k *Continuation) (Any, *Environment) {
 	}
 	switch fn := fun.(type) {
 	case func(*Cell) Any:
-		return fn(arg), Done
+		return fn(arg)
 	case *Closure:
-		env := fn.Env.PrependDefs(fn.Params, arg)
-		return &Cell{Begin, fn.Body}, env
+		n := len(*k) - 1
+		if !(n >= 0 && (*k)[n].Op == RestoreEnvOp) { // unless tail call...
+			k.Push(RestoreEnvOp, env)
+		}
+		k.Push(BeginOp, fn.Body)
+		k.Push(SetNewEnvOp, fn.Env.PrependDefs(fn.Params, arg))
+		return Void
 	case Continuation:
 		*k = fn.Copy()
-		return arg.Car, Done
+		return arg.Car
 	}
 	panic(fmt.Sprintf("%v for %v is not a function", fun, arg))
 }

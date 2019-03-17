@@ -1,4 +1,4 @@
-// A little Scheme in Go 1.12 v0.5 H31.03.03/H31.03.10 by SUZUKI Hisao
+// A little Scheme in Go 1.12 v0.5 H31.03.03/H31.03.17 by SUZUKI Hisao
 package main
 
 import (
@@ -104,11 +104,13 @@ func (k *Continuation) Push(op int, value Any) {
 }
 
 // Pop pops a step from the tail of the continuation.
-func (k *Continuation) Pop() (int, Any) {
+func (k *Continuation) Pop() (op int, value Any) {
 	n := len(*k) - 1
-	step := (*k)[n]
+	step := &(*k)[n]
+	op, value = step.Op, step.Val
+	step.Val = nil // for garbage collection
 	*k = (*k)[:n]
-	return step.Op, step.Val
+	return
 }
 
 // Copy copies the continuation.
@@ -263,16 +265,16 @@ const (
 	DefineOp
 	SetQOp
 	ApplyOp
-	FunCallOp
+	ApplyFunOp
 	EvalArgOp
 	PushArgsOp
-	SetNewEnvOp
 	RestoreEnvOp
 )
 
+// Names of continuation operators
 var OpStr = [...]string{
 	"If", "Begin", "Lambda", "Define", "SetQ", "Apply",
-	"FunCall", "EvalArg", "PushArgs", "SetNewEnv", "RestoreEnvOp",
+	"ApplyFun", "EvalArg", "PushArgs", "RestoreEnv",
 }
 
 // Evaluate evaluates an expresssion in an environment.
@@ -317,7 +319,7 @@ func Evaluate(exp Any, env *Environment) Any {
 			default: // as a number, #t, #f etc.
 				break Loop1
 			}
-		}
+		} // end Loop1
 	Loop2:
 		for {
 			// fmt.Printf("_%d", len(k))
@@ -358,9 +360,9 @@ func Evaluate(exp Any, env *Environment) Any {
 			case ApplyOp: // exp = fun; x = arg...
 				j := x.(*Cell)
 				if j == Nil {
-					exp = applyFunction(exp, Nil, &k, env)
+					exp, env = applyFunction(exp, Nil, &k, env)
 				} else {
-					k.Push(FunCallOp, exp)
+					k.Push(ApplyFunOp, exp)
 					for j.Cdr != Nil {
 						k.Push(EvalArgOp, j.Car)
 						j = j.Cdr.(*Cell)
@@ -375,12 +377,12 @@ func Evaluate(exp Any, env *Environment) Any {
 				if op == EvalArgOp { // exp = next arg
 					k.Push(PushArgsOp, args)
 					break Loop2
-				} else if op == FunCallOp { // exp = evaluated fun
-					exp = applyFunction(exp, args, &k, env)
+				} else if op == ApplyFunOp { // exp = evaluated fun
+					exp, env = applyFunction(exp, args, &k, env)
 				} else {
 					panic("unexpected " + OpStr[op])
 				}
-			case SetNewEnvOp, RestoreEnvOp: // x = &Environment{...}
+			case RestoreEnvOp: // x = &Environment{...}
 				env = x.(*Environment)
 			default:
 				panic("Bad " + Stringify(k, true) +
@@ -391,7 +393,8 @@ func Evaluate(exp Any, env *Environment) Any {
 }
 
 // applyFunction applies a function to arguments with a continuation.
-func applyFunction(fun Any, arg *Cell, k *Continuation, env *Environment) Any {
+func applyFunction(fun Any, arg *Cell, k *Continuation, env *Environment) (
+	Any, *Environment) {
 	// fmt.Println("\t-- %s", Stringify(*k, true))
 	for {
 		if fun == CallCC {
@@ -404,18 +407,17 @@ func applyFunction(fun Any, arg *Cell, k *Continuation, env *Environment) Any {
 	}
 	switch fn := fun.(type) {
 	case func(*Cell) Any:
-		return fn(arg)
+		return fn(arg), env
 	case *Closure:
 		n := len(*k) - 1
 		if !(n >= 0 && (*k)[n].Op == RestoreEnvOp) { // unless tail call...
 			k.Push(RestoreEnvOp, env)
 		}
 		k.Push(BeginOp, fn.Body)
-		k.Push(SetNewEnvOp, fn.Env.PrependDefs(fn.Params, arg))
-		return Void
+		return Void, fn.Env.PrependDefs(fn.Params, arg)
 	case Continuation:
 		*k = fn.Copy()
-		return arg.Car
+		return arg.Car, env
 	}
 	panic(fmt.Sprintf("%v for %v is not a function", fun, arg))
 }

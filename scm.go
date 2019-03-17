@@ -1,4 +1,4 @@
-// A little Scheme in Go 1.12 v0.5 H31.03.03/H31.03.17 by SUZUKI Hisao
+// A little Scheme in Go 1.12 v1.0 H31.03.03/H31.03.17 by SUZUKI Hisao
 package main
 
 import (
@@ -27,8 +27,13 @@ type Cell struct {
 
 var Nil *Cell = nil
 
-func (j *Cell) String() string {
-	return Stringify(j, true)
+// Length returns the length of the list.
+func (j *Cell) Length() int {
+	n := 0
+	for j != Nil {
+		n, j = n+1, j.Cdr.(*Cell)
+	}
+	return n
 }
 
 //----------------------------------------------------------------------
@@ -72,16 +77,19 @@ func (env *Environment) LookFor(key *Symbol) *Environment {
 		}
 		env = env.Next
 	}
-	panic(string(*key) + " not found")
+	panic(fmt.Errorf("%s not found", *key))
 }
 
 // PrependDefs builds a new environment which prepends pairs of keys and data.
 func (env *Environment) PrependDefs(keys *Cell, data *Cell) *Environment {
 	if keys == Nil {
 		if data != Nil {
-			panic("surplus arg: " + Stringify(data, true))
+			panic(fmt.Errorf("surplus arg: %s", Stringify(data, true)))
 		}
 		return env
+	}
+	if data == Nil {
+		panic(fmt.Errorf("surplus param: %s", Stringify(keys, true)))
 	}
 	return &Environment{keys.Car.(*Symbol), data.Car,
 		env.PrependDefs(keys.Cdr.(*Cell), data.Cdr.(*Cell))}
@@ -129,6 +137,17 @@ type Closure struct {
 	Env    *Environment
 }
 
+// Intrinsic represents an intrinsic function.
+type Intrinsic struct {
+	Name     string
+	Arity    int
+	Function func(*Cell) Any
+}
+
+func (f *Intrinsic) String() string {
+	return fmt.Sprintf("#<%s:%d>", f.Name, f.Arity)
+}
+
 // Void means the expresssion has no value.
 var Void = &struct{}{}
 
@@ -160,7 +179,16 @@ func Stringify(exp Any, quote bool) (result string) {
 		}
 		return "(" + strings.Join(ss, " ") + ")"
 	case *Environment:
-		return fmt.Sprintf("#%p", x)
+		ss := make([]string, 0, 100)
+		for x != nil {
+			if x == GlobalEnv {
+				ss = append(ss, "GlobalEnv")
+				break
+			}
+			ss = append(ss, string(*x.Sym))
+			x = x.Next
+		}
+		return "#<" + strings.Join(ss, ",") + ">"
 	case *Closure:
 		p := Stringify(x.Params, true)
 		b := Stringify(x.Body, true)
@@ -171,97 +199,114 @@ func Stringify(exp Any, quote bool) (result string) {
 		for _, step := range x {
 			p := OpStr[step.Op]
 			v := Stringify(step.Val, true)
-			ss = append(ss, "<"+p+":"+v+">")
+			ss = append(ss, p+" "+v)
 		}
-		return "#<" + strings.Join(ss, "\n\t") + ">"
-	case func(*Cell) Any:
-		return fmt.Sprintf("#<%v>", x)
+		return "\n\t#<" + strings.Join(ss, "\n\t  ") + ">"
 	case *Symbol:
 		return string(*x)
 	case string:
 		if quote {
 			return fmt.Sprintf("%q", exp)
 		}
+	case rune:
+		return fmt.Sprintf("#\\%c", x)
+	case []Any:
+		ss := make([]string, 0, 100)
+		for _, e := range x {
+			ss = append(ss, Stringify(e, true))
+		}
+		return "#(" + strings.Join(ss, " ") + ")"
 	}
 	return fmt.Sprintf("%v", exp)
 }
 
+// GlobalEnv is the global environment.
+var GlobalEnv *Environment
+
 //----------------------------------------------------------------------
 
-func c(name string, fun func(*Cell) Any, next *Environment) *Environment {
-	return &Environment{Intern(name), fun, next}
+func c(name string, arity int, fun func(*Cell) Any,
+	next *Environment) *Environment {
+	return &Environment{Intern(name), &Intrinsic{name, arity, fun}, next}
 }
 
-var GlobalEnv *Environment = c(
-	"car", func(x *Cell) Any {
-		return x.Car.(*Cell).Car
-	}, c("cdr", func(x *Cell) Any {
-		return x.Car.(*Cell).Cdr
-	}, c("cons", func(x *Cell) Any {
-		return &Cell{x.Car, x.Cdr.(*Cell).Car}
-	}, c("eq?", func(x *Cell) Any {
-		return x.Car == x.Cdr.(*Cell).Car
-	}, c("eqv?", func(x *Cell) Any {
-		a, b := x.Car, x.Cdr.(*Cell).Car
-		if a == b {
-			return true
-		}
-		if x := goarith.AsNumber(a); x != nil {
-			if y := goarith.AsNumber(b); y != nil {
-				if x.Cmp(y) == 0 {
-					return true
+func init() {
+	GlobalEnv = c(
+		"car", 1, func(x *Cell) Any {
+			return x.Car.(*Cell).Car
+		}, c("cdr", 1, func(x *Cell) Any {
+			return x.Car.(*Cell).Cdr
+		}, c("cons", 2, func(x *Cell) Any {
+			return &Cell{x.Car, x.Cdr.(*Cell).Car}
+		}, c("eq?", 2, func(x *Cell) Any {
+			return x.Car == x.Cdr.(*Cell).Car
+		}, c("eqv?", 2, func(x *Cell) Any {
+			a, b := x.Car, x.Cdr.(*Cell).Car
+			if a == b {
+				return true
+			}
+			if x := goarith.AsNumber(a); x != nil {
+				if y := goarith.AsNumber(b); y != nil {
+					if x.Cmp(y) == 0 {
+						return true
+					}
 				}
 			}
-		}
-		return false
-	}, c("pair?", func(x *Cell) Any {
-		c, ok := x.Car.(*Cell)
-		return ok && c != Nil
-	}, c("null?", func(x *Cell) Any {
-		return x.Car == Nil
-	}, c("not", func(x *Cell) Any {
-		return x.Car == false
-	}, c("list", func(x *Cell) Any {
-		return x
-	}, c("display", func(x *Cell) Any {
-		fmt.Print(Stringify(x.Car, false))
-		return Void
-	}, c("newline", func(x *Cell) Any {
-		fmt.Println()
-		return Void
-	}, c("read", func(x *Cell) Any {
-		return ReadExpression("", "")
-	}, c("eof-object?", func(x *Cell) Any {
-		return x.Car == scanner.EOF
-	}, c("symbol?", func(x *Cell) Any {
-		_, ok := x.Car.(*Symbol)
-		return ok
-	}, c("+", func(x *Cell) Any {
-		a, b := x.Car, x.Cdr.(*Cell).Car
-		return goarith.AsNumber(a).Add(goarith.AsNumber(b))
-	}, c("-", func(x *Cell) Any {
-		a, b := x.Car, x.Cdr.(*Cell).Car
-		return goarith.AsNumber(a).Sub(goarith.AsNumber(b))
-	}, c("*", func(x *Cell) Any {
-		a, b := x.Car, x.Cdr.(*Cell).Car
-		return goarith.AsNumber(a).Mul(goarith.AsNumber(b))
-	}, c("<", func(x *Cell) Any {
-		a, b := x.Car, x.Cdr.(*Cell).Car
-		return goarith.AsNumber(a).Cmp(goarith.AsNumber(b)) < 0
-	}, c("=", func(x *Cell) Any {
-		a, b := x.Car, x.Cdr.(*Cell).Car
-		return goarith.AsNumber(a).Cmp(goarith.AsNumber(b)) == 0
-	}, &Environment{CallCC, CallCC,
-		&Environment{Apply, Apply,
-			nil}})))))))))))))))))))
+			return false
+		}, c("pair?", 1, func(x *Cell) Any {
+			c, ok := x.Car.(*Cell)
+			return ok && c != Nil
+		}, c("null?", 1, func(x *Cell) Any {
+			return x.Car == Nil
+		}, c("not", 1, func(x *Cell) Any {
+			return x.Car == false
+		}, c("list", -1, func(x *Cell) Any {
+			return x
+		}, c("display", 1, func(x *Cell) Any {
+			fmt.Print(Stringify(x.Car, false))
+			return Void
+		}, c("newline", 0, func(x *Cell) Any {
+			fmt.Println()
+			return Void
+		}, c("read", 0, func(x *Cell) Any {
+			return ReadExpression("", "")
+		}, c("eof-object?", 1, func(x *Cell) Any {
+			return x.Car == scanner.EOF
+		}, c("symbol?", 1, func(x *Cell) Any {
+			_, ok := x.Car.(*Symbol)
+			return ok
+		}, c("+", 2, func(x *Cell) Any {
+			a, b := x.Car, x.Cdr.(*Cell).Car
+			return goarith.AsNumber(a).Add(goarith.AsNumber(b))
+		}, c("-", 2, func(x *Cell) Any {
+			a, b := x.Car, x.Cdr.(*Cell).Car
+			return goarith.AsNumber(a).Sub(goarith.AsNumber(b))
+		}, c("*", 2, func(x *Cell) Any {
+			a, b := x.Car, x.Cdr.(*Cell).Car
+			return goarith.AsNumber(a).Mul(goarith.AsNumber(b))
+		}, c("<", 2, func(x *Cell) Any {
+			a, b := x.Car, x.Cdr.(*Cell).Car
+			return goarith.AsNumber(a).Cmp(goarith.AsNumber(b)) < 0
+		}, c("=", 2, func(x *Cell) Any {
+			a, b := x.Car, x.Cdr.(*Cell).Car
+			return goarith.AsNumber(a).Cmp(goarith.AsNumber(b)) == 0
+		}, c("globals", 0, func(x *Cell) Any {
+			j := Nil
+			for e := GlobalEnv; e != nil; e = e.Next {
+				j = &Cell{e.Sym, j}
+			}
+			return j
+		}, &Environment{CallCC, CallCC,
+			&Environment{Apply, Apply,
+				nil}}))))))))))))))))))))
+}
 
 //----------------------------------------------------------------------
 
 // Continuation operators
 const (
-	IfOp = iota
+	ThenOp = iota
 	BeginOp
-	LambdaOp
 	DefineOp
 	SetQOp
 	ApplyOp
@@ -273,13 +318,28 @@ const (
 
 // Names of continuation operators
 var OpStr = [...]string{
-	"If", "Begin", "Lambda", "Define", "SetQ", "Apply",
+	"Then", "Begin", "Define", "SetQ", "Apply",
 	"ApplyFun", "EvalArg", "PushArgs", "RestoreEnv",
 }
 
 // Evaluate evaluates an expresssion in an environment.
-func Evaluate(exp Any, env *Environment) Any {
+func Evaluate(exp Any, env *Environment) (result Any, err error) {
 	k := make(Continuation, 0, 100)
+	defer func() {
+		if ex := recover(); ex != nil {
+			if er, isError := ex.(error); isError {
+				if len(k) == 0 {
+					err = er
+				} else {
+					err = fmt.Errorf("%s: %s\n\t%s, %s",
+						er, Stringify(k, true),
+						Stringify(exp, true), Stringify(env, true))
+				}
+			} else {
+				panic(ex)
+			}
+		}
+	}()
 	for {
 	Loop1:
 		for {
@@ -292,7 +352,7 @@ func Evaluate(exp Any, env *Environment) Any {
 					break Loop1
 				case If: // (if e1 e2 e3) or (if e1 e2)
 					exp = kdr.Car
-					k.Push(IfOp, kdr.Cdr)
+					k.Push(ThenOp, kdr.Cdr)
 				case Begin: // (begin e...)
 					exp = kdr.Car
 					if kdr.Cdr != Nil {
@@ -322,13 +382,13 @@ func Evaluate(exp Any, env *Environment) Any {
 		} // end Loop1
 	Loop2:
 		for {
-			// fmt.Printf("_%d", len(k))
+			//fmt.Printf("_%d", len(k))
 			if len(k) == 0 {
-				return exp
+				return exp, nil
 			}
 			op, x := k.Pop()
 			switch op {
-			case IfOp: // x = (e2 e3)
+			case ThenOp: // x = (e2 e3)
 				j := x.(*Cell)
 				if exp == false {
 					if j.Cdr == Nil {
@@ -380,13 +440,13 @@ func Evaluate(exp Any, env *Environment) Any {
 				} else if op == ApplyFunOp { // exp = evaluated fun
 					exp, env = applyFunction(exp, args, &k, env)
 				} else {
-					panic("unexpected " + OpStr[op])
+					panic(fmt.Errorf("unexpected %s", OpStr[op]))
 				}
 			case RestoreEnvOp: // x = &Environment{...}
 				env = x.(*Environment)
 			default:
-				panic("Bad " + Stringify(k, true) +
-					" for " + Stringify(exp, true))
+				panic(fmt.Errorf("bad %s for %s",
+					Stringify(k, true), Stringify(exp, true)))
 			}
 		} // end Loop2
 	}
@@ -395,7 +455,6 @@ func Evaluate(exp Any, env *Environment) Any {
 // applyFunction applies a function to arguments with a continuation.
 func applyFunction(fun Any, arg *Cell, k *Continuation, env *Environment) (
 	Any, *Environment) {
-	// fmt.Println("\t-- %s", Stringify(*k, true))
 	for {
 		if fun == CallCC {
 			fun, arg = arg.Car, &Cell{k.Copy(), Nil}
@@ -406,8 +465,14 @@ func applyFunction(fun Any, arg *Cell, k *Continuation, env *Environment) (
 		}
 	}
 	switch fn := fun.(type) {
-	case func(*Cell) Any:
-		return fn(arg), env
+	case *Intrinsic:
+		if fn.Arity >= 0 {
+			if arg.Length() != fn.Arity {
+				panic(fmt.Errorf("%s (arity %d) applied to %s",
+					fn.Name, fn.Arity, Stringify(arg, true)))
+			}
+		}
+		return fn.Function(arg), env
 	case *Closure:
 		n := len(*k) - 1
 		if !(n >= 0 && (*k)[n].Op == RestoreEnvOp) { // unless tail call...
@@ -419,7 +484,8 @@ func applyFunction(fun Any, arg *Cell, k *Continuation, env *Environment) (
 		*k = fn.Copy()
 		return arg.Car, env
 	}
-	panic(fmt.Sprintf("%v for %v is not a function", fun, arg))
+	panic(fmt.Errorf("%s applied to %s is not a function",
+		Stringify(fun, true), Stringify(arg, true)))
 }
 
 //----------------------------------------------------------------------
@@ -446,22 +512,22 @@ func SplitIntoTokens(src io.Reader) []Any {
 			ch != '(' && ch != ')' && ch != '\'' && ch != '"')
 	}
 	scn.Error = func(s *scanner.Scanner, msg string) {
-		panic(fmt.Sprintf("%s at %s", msg, s.Position))
+		panic(fmt.Errorf("%s at %s", msg, s.Position))
 	}
 	scn.Whitespace ^= 1 << '\n' // Don't skip new lines.
 	scn.Whitespace |= 1 << '\f'
-LOOP:
+Loop:
 	for tok := scn.Scan(); tok != scanner.EOF; tok = scn.Scan() {
 		switch tok {
 		case ';': // Skip ;-comment
 			for {
 				tok = scn.Scan()
 				if tok == scanner.EOF || tok == '\n' {
-					continue LOOP
+					continue Loop
 				}
 			}
 		case '\n':
-			continue LOOP
+			continue Loop
 		case '(', ')', '\'':
 			result = append(result, tok)
 		case scanner.String:
@@ -470,7 +536,9 @@ LOOP:
 			result = append(result, text)
 		case scanner.Ident:
 			text := scn.TokenText()
-			if text == "#t" {
+			if text == "." {
+				result = append(result, '.')
+			} else if text == "#t" {
 				result = append(result, true)
 			} else if text == "#f" {
 				result = append(result, false)
@@ -481,7 +549,7 @@ LOOP:
 				result = append(result, sym)
 			}
 		default:
-			panic(fmt.Sprintf("illegal char %q at %s", tok, scn.Position))
+			panic(fmt.Errorf("illegal char %q at %s", tok, scn.Position))
 		}
 	}
 	return result
@@ -516,7 +584,8 @@ func ReadFromTokens(tokens *[]Any) Any {
 				pop(tokens)
 				y.Cdr = ReadFromTokens(tokens)
 				if peek(tokens) != ')' {
-					panic(") is expected")
+					panic(fmt.Errorf(") is expected: %s",
+						Stringify(*tokens, true)))
 				}
 				break
 			}
@@ -528,7 +597,7 @@ func ReadFromTokens(tokens *[]Any) Any {
 		pop(tokens)
 		return z.Cdr
 	case ')':
-		panic("unexpected )")
+		panic(fmt.Errorf("unexpected ) before %s", Stringify(*tokens, true)))
 	case '\'':
 		e := ReadFromTokens(tokens)
 		return &Cell{Quote, &Cell{e, Nil}} // 'e => (quote e)
@@ -540,11 +609,11 @@ func ReadFromTokens(tokens *[]Any) Any {
 // whether tokens has not run out unexpectedly.
 func ReadFromTokensSafely(tokens *[]Any) (result Any, ok bool) {
 	defer func() {
-		if err := recover(); err != nil {
-			if _, succeeded := err.(indexError); succeeded {
+		if ex := recover(); ex != nil {
+			if _, isIndexError := ex.(indexError); isIndexError {
 				ok = false
 			} else {
-				panic(err)
+				panic(ex)
 			}
 		}
 	}()
@@ -554,7 +623,13 @@ func ReadFromTokensSafely(tokens *[]Any) (result Any, ok bool) {
 //----------------------------------------------------------------------
 
 // Load loads a source code from a file.
-func Load(fileName string) {
+func Load(fileName string) (ok bool) {
+	defer func() {
+		if ex := recover(); ex != nil {
+			fmt.Fprintf(os.Stderr, "error: %s\n", ex)
+			ok = false
+		}
+	}()
 	file, err := os.Open(fileName)
 	if err != nil {
 		panic(err)
@@ -563,8 +638,12 @@ func Load(fileName string) {
 	tokens := SplitIntoTokens(file)
 	for len(tokens) != 0 {
 		exp := ReadFromTokens(&tokens)
-		Evaluate(exp, GlobalEnv)
+		_, err = Evaluate(exp, GlobalEnv)
+		if err != nil {
+			panic(err)
+		}
 	}
+	return true
 }
 
 var Tokens []Any
@@ -603,8 +682,10 @@ func ReadEvalPrintLoop() {
 			fmt.Println("Goodby")
 			return
 		}
-		result := Evaluate(exp, GlobalEnv)
-		if result != Void {
+		result, err := Evaluate(exp, GlobalEnv)
+		if err != nil {
+			fmt.Println(err)
+		} else if result != Void {
 			fmt.Println(Stringify(result, true))
 		}
 	}
@@ -612,7 +693,9 @@ func ReadEvalPrintLoop() {
 
 func main() {
 	if len(os.Args) >= 2 {
-		Load(os.Args[1])
+		if !Load(os.Args[1]) {
+			os.Exit(1)
+		}
 		if len(os.Args) < 3 || os.Args[2] != "-" {
 			return
 		}

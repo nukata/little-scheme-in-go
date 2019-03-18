@@ -1,4 +1,4 @@
-// A little Scheme in Go 1.12 v1.0 H31.03.03/H31.03.18 by SUZUKI Hisao
+// A little Scheme in Go 1.12 v1.0 H31.03.03/H31.03.19 by SUZUKI Hisao
 package main
 
 import (
@@ -638,7 +638,11 @@ func ReadFromTokensSafely(tokens *[]Any) (result Any, ok bool) {
 func Load(fileName string) (ok bool) {
 	defer func() {
 		if ex := recover(); ex != nil {
-			fmt.Fprintf(os.Stderr, "error: %s\n", ex)
+			if _, isIndexError := ex.(indexError); isIndexError {
+				fmt.Fprintf(os.Stderr, "error: unexpected EOF: %s\n", fileName)
+			} else {
+				fmt.Fprintf(os.Stderr, "error: %s\n", ex)
+			}
 			ok = false
 		}
 	}()

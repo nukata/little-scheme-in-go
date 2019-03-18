@@ -63,9 +63,9 @@ $ time ./little-scheme-in-go ../little-scheme/scm.scm \
 > < ../little-scheme/examples/nqueens.scm 
 ((5 3 1 6 4 2) (4 1 5 2 6 3) (3 6 2 5 1 4) (2 4 6 1 3 5))
 
-real	0m1.412s
-user	0m1.491s
-sys	0m0.023s
+real	0m1.611s
+user	0m1.705s
+sys	0m0.025s
 $ 
 ```
 
@@ -108,9 +108,3 @@ interned with `sync.Map`.
 
 For expression types and built-in procedures, see
 [little-scheme-in-python](https://github.com/nukata/little-scheme-in-python).
-In addition, the language has `(globals)`, which returns a list of keys of
-the global environment
-as in [little-scheme](https://github.com/nukata/little-scheme).
-
-
-

@@ -1,4 +1,4 @@
-// A little Scheme in Go 1.12 v1.0 H31.03.03/H31.03.17 by SUZUKI Hisao
+// A little Scheme in Go 1.12 v1.0 H31.03.03/H31.03.18 by SUZUKI Hisao
 package main
 
 import (
@@ -63,6 +63,7 @@ var CallCC = Intern("call/cc")
 //----------------------------------------------------------------------
 
 // Environment represents Scheme's environment.
+// (env.Sym == nil) means the env is the frame top.
 type Environment struct {
 	Sym  *Symbol
 	Val  Any
@@ -185,10 +186,14 @@ func Stringify(exp Any, quote bool) (result string) {
 				ss = append(ss, "GlobalEnv")
 				break
 			}
-			ss = append(ss, string(*x.Sym))
+			if x.Sym == nil { // frame top
+				ss = append(ss, "|")
+			} else {
+				ss = append(ss, string(*x.Sym))
+			}
 			x = x.Next
 		}
-		return "#<" + strings.Join(ss, ",") + ">"
+		return "#<" + strings.Join(ss, " ") + ">"
 	case *Closure:
 		p := Stringify(x.Params, true)
 		b := Stringify(x.Body, true)
@@ -231,8 +236,8 @@ func c(name string, arity int, fun func(*Cell) Any,
 }
 
 func init() {
-	GlobalEnv = c(
-		"car", 1, func(x *Cell) Any {
+	GlobalEnv = &Environment{nil, nil, // frame top
+		c("car", 1, func(x *Cell) Any {
 			return x.Car.(*Cell).Car
 		}, c("cdr", 1, func(x *Cell) Any {
 			return x.Car.(*Cell).Cdr
@@ -291,14 +296,14 @@ func init() {
 			a, b := x.Car, x.Cdr.(*Cell).Car
 			return goarith.AsNumber(a).Cmp(goarith.AsNumber(b)) == 0
 		}, c("globals", 0, func(x *Cell) Any {
-			j := Nil
-			for e := GlobalEnv; e != nil; e = e.Next {
+			j := Nil // Take Next initially to skip the frame top.
+			for e := GlobalEnv.Next; e != nil; e = e.Next {
 				j = &Cell{e.Sym, j}
 			}
 			return j
 		}, &Environment{CallCC, CallCC,
 			&Environment{Apply, Apply,
-				nil}}))))))))))))))))))))
+				nil}}))))))))))))))))))))}
 }
 
 //----------------------------------------------------------------------
@@ -409,9 +414,10 @@ func Evaluate(exp Any, env *Environment) (result Any, err error) {
 				exp = j.Car
 				break Loop2
 			case DefineOp: // x = var
-				env.Next = &Environment{env.Sym, env.Val, env.Next}
-				env.Val = exp
-				env.Sym = x.(*Symbol)
+				if env.Sym != nil { // Check env for the frame top.
+					panic(fmt.Errorf("invalid env: %s", Stringify(env, true)))
+				}
+				env.Next = &Environment{x.(*Symbol), exp, env.Next}
 				exp = Void
 			case SetQOp: // x = &Environment{var, e, ...}
 				pair := x.(*Environment)
@@ -457,6 +463,7 @@ func applyFunction(fun Any, arg *Cell, k *Continuation, env *Environment) (
 	Any, *Environment) {
 	for {
 		if fun == CallCC {
+			pushRestoreEnv(k, env)
 			fun, arg = arg.Car, &Cell{k.Copy(), Nil}
 		} else if fun == Apply {
 			fun, arg = arg.Car, arg.Cdr.(*Cell).Car.(*Cell)
@@ -474,18 +481,23 @@ func applyFunction(fun Any, arg *Cell, k *Continuation, env *Environment) (
 		}
 		return fn.Function(arg), env
 	case *Closure:
-		n := len(*k) - 1
-		if !(n >= 0 && (*k)[n].Op == RestoreEnvOp) { // unless tail call...
-			k.Push(RestoreEnvOp, env)
-		}
+		pushRestoreEnv(k, env)
 		k.Push(BeginOp, fn.Body)
-		return Void, fn.Env.PrependDefs(fn.Params, arg)
+		return Void, &Environment{nil, nil, // frame top
+			fn.Env.PrependDefs(fn.Params, arg)}
 	case Continuation:
 		*k = fn.Copy()
 		return arg.Car, env
 	}
 	panic(fmt.Errorf("%s applied to %s is not a function",
 		Stringify(fun, true), Stringify(arg, true)))
+}
+
+func pushRestoreEnv(k *Continuation, env *Environment) {
+	n := len(*k) - 1
+	if !(n >= 0 && (*k)[n].Op == RestoreEnvOp) { // unless tail call...
+		k.Push(RestoreEnvOp, env)
+	}
 }
 
 //----------------------------------------------------------------------

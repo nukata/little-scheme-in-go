@@ -1,4 +1,4 @@
-// A little Scheme in Go 1.12 v1.0 H31.03.03/H31.03.19 by SUZUKI Hisao
+// A little Scheme in Go 1.12 v1.0 H31.03.03/H31.03.21 by SUZUKI Hisao
 package main
 
 import (
@@ -446,13 +446,13 @@ func Evaluate(exp Any, env *Environment) (result Any, err error) {
 				} else if op == ApplyFunOp { // exp = evaluated fun
 					exp, env = applyFunction(exp, args, &k, env)
 				} else {
-					panic(fmt.Errorf("unexpected %s", OpStr[op]))
+					panic(fmt.Errorf("unexpected op %d", op))
 				}
 			case RestoreEnvOp: // x = &Environment{...}
 				env = x.(*Environment)
 			default:
-				panic(fmt.Errorf("bad %s for %s",
-					Stringify(k, true), Stringify(exp, true)))
+				panic(fmt.Errorf("bad op %d and value %s",
+					op, Stringify(x, true)))
 			}
 		} // end Loop2
 	}

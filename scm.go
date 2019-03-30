@@ -1,4 +1,4 @@
-// A little Scheme in Go 1.12 v1.0 H31.03.03/H31.03.21 by SUZUKI Hisao
+// A little Scheme in Go 1.12 v1.0 H31.03.03/H31.03.30 by SUZUKI Hisao
 package main
 
 import (
@@ -617,21 +617,6 @@ func ReadFromTokens(tokens *[]Any) Any {
 	return token
 }
 
-// ReadFromTokensSafely returns ReadFromTokens' result and
-// whether tokens has not run out unexpectedly.
-func ReadFromTokensSafely(tokens *[]Any) (result Any, ok bool) {
-	defer func() {
-		if ex := recover(); ex != nil {
-			if _, isIndexError := ex.(indexError); isIndexError {
-				ok = false
-			} else {
-				panic(ex)
-			}
-		}
-	}()
-	return ReadFromTokens(tokens), true
-}
-
 //----------------------------------------------------------------------
 
 // Load loads a source code from a file.
@@ -665,12 +650,32 @@ func Load(fileName string) (ok bool) {
 var Tokens []Any
 var Lines *bufio.Scanner = bufio.NewScanner(os.Stdin)
 
+func splitIntoTokensSafely(src io.Reader) (result []Any, err Any) {
+	defer func() {
+		err = recover()
+	}()
+	result = SplitIntoTokens(src)
+	return
+}
+
+func readFromTokensSafely(tokens *[]Any) (result Any, err Any) {
+	defer func() {
+		err = recover()
+	}()
+	result = ReadFromTokens(tokens)
+	return
+}
+
 // ReadExpression reads an expression from the standard-in.
 func ReadExpression(prompt1 string, prompt2 string) Any {
+	var errorResult Any
 	for {
 		old := Tokens[:]
-		if exp, ok := ReadFromTokensSafely(&Tokens); ok {
+		if exp, err := readFromTokensSafely(&Tokens); err == nil {
 			return exp
+		} else if _, isIndexError := err.(indexError); !isIndexError {
+			errorResult = err
+			break
 		}
 		// Here peek(tokens) or pop(tokens) failed unexpectedly.
 		if len(old) == 0 {
@@ -685,9 +690,15 @@ func ReadExpression(prompt1 string, prompt2 string) Any {
 			return scanner.EOF
 		}
 		line := Lines.Text()
-		newTokens := SplitIntoTokens(strings.NewReader(line))
+		newTokens, err := splitIntoTokensSafely(strings.NewReader(line))
+		if err != nil {
+			errorResult = err
+			break
+		}
 		Tokens = append(old, newTokens...)
 	}
+	Tokens = make([]Any, 0) // Discard the erroneous tokens.
+	return fmt.Errorf("syntax error: %v", errorResult)
 }
 
 // ReadEvalPrintLoop repeats read-eval-print until End-Of-File.
@@ -697,6 +708,9 @@ func ReadEvalPrintLoop() {
 		if exp == scanner.EOF {
 			fmt.Println("Goodby")
 			return
+		} else if err, isError := exp.(error); isError {
+			fmt.Println(err)
+			continue
 		}
 		result, err := Evaluate(exp, GlobalEnv)
 		if err != nil {

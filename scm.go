@@ -1,4 +1,4 @@
-// A little Scheme in Go 1.12 v1.0 H31.03.03/H31.03.30 by SUZUKI Hisao
+// A little Scheme in Go 1.12 v1.1 H31.03.03/R01.07.22 by SUZUKI Hisao
 package main
 
 import (
@@ -149,6 +149,13 @@ func (f *Intrinsic) String() string {
 	return fmt.Sprintf("#<%s:%d>", f.Name, f.Arity)
 }
 
+// ErrorString represents a panic value of error procedure.
+type ErrorString string
+
+func (s ErrorString) Error() string {
+	return string(s)
+}
+
 // Void means the expresssion has no value.
 var Void = &struct{}{}
 
@@ -295,6 +302,11 @@ func init() {
 		}, c("=", 2, func(x *Cell) Any {
 			a, b := x.Car, x.Cdr.(*Cell).Car
 			return goarith.AsNumber(a).Cmp(goarith.AsNumber(b)) == 0
+		}, c("error", 2, func(x *Cell) Any {
+			a, b := x.Car, x.Cdr.(*Cell).Car
+			s := fmt.Sprintf("Error: %s: %s",
+				Stringify(a, false), Stringify(b, true))
+			panic(ErrorString(s))
 		}, c("globals", 0, func(x *Cell) Any {
 			j := Nil // Take Next initially to skip the frame top.
 			for e := GlobalEnv.Next; e != nil; e = e.Next {
@@ -303,7 +315,7 @@ func init() {
 			return j
 		}, &Environment{CallCC, CallCC,
 			&Environment{Apply, Apply,
-				nil}}))))))))))))))))))))}
+				nil}})))))))))))))))))))))}
 }
 
 //----------------------------------------------------------------------
@@ -317,7 +329,7 @@ const (
 	ApplyOp
 	ApplyFunOp
 	EvalArgOp
-	PushArgsOp
+	ConsArgsOp
 	RestoreEnvOp
 )
 
@@ -333,7 +345,9 @@ func Evaluate(exp Any, env *Environment) (result Any, err error) {
 	defer func() {
 		if ex := recover(); ex != nil {
 			if er, isError := ex.(error); isError {
-				if len(k) == 0 {
+				if _, isErrorString := ex.(ErrorString); isErrorString {
+					err = er
+				} else if len(k) == 0 {
 					err = er
 				} else {
 					err = fmt.Errorf("%s: %s\n\t%s, %s",
@@ -434,14 +448,14 @@ func Evaluate(exp Any, env *Environment) (result Any, err error) {
 						j = j.Cdr.(*Cell)
 					}
 					exp = j.Car
-					k.Push(PushArgsOp, Nil)
+					k.Push(ConsArgsOp, Nil)
 					break Loop2
 				}
-			case PushArgsOp: // x = evaluated arg...
+			case ConsArgsOp: // x = evaluated arg...
 				args := &Cell{exp, x}
 				op, exp = k.Pop()
 				if op == EvalArgOp { // exp = next arg
-					k.Push(PushArgsOp, args)
+					k.Push(ConsArgsOp, args)
 					break Loop2
 				} else if op == ApplyFunOp { // exp = evaluated fun
 					exp, env = applyFunction(exp, args, &k, env)

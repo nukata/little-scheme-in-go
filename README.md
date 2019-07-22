@@ -2,9 +2,13 @@
 
 This is a small interpreter of a subset of Scheme.
 It implements the same language as
-[little-scheme-in-python](https://github.com/nukata/little-scheme-in-python)
-(and also its meta-circular interpreter, 
-[little-scheme](https://github.com/nukata/little-scheme))
+
+- [little-scheme-in-python](https://github.com/nukata/little-scheme-in-python)
+- [little-scheme-in-java](https://github.com/nukata/little-scheme-in-java)
+- [little-scheme-in-cs](https://github.com/nukata/little-scheme-in-cs)
+
+and also their meta-circular interpreter, 
+[little-scheme](https://github.com/nukata/little-scheme)
 in circa 700 lines of Go 1.12
 (and it uses an arithmetic package,
 [goarith](https://github.com/nukata/goarith), which has circa 600 lines
@@ -45,7 +49,8 @@ $
 
 You can run it with a Scheme script.
 Examples are found in 
-[little-scheme](https://github.com/nukata/little-scheme).
+[little-scheme](https://github.com/nukata/little-scheme);
+download it at `..` and you can try the following:
 
 ```
 $ ./little-scheme-in-go ../little-scheme/examples/yin-yang-puzzle.scm | head
@@ -59,13 +64,9 @@ $ ./little-scheme-in-go ../little-scheme/examples/yin-yang-puzzle.scm | head
 *******
 ********
 *********
-$ time ./little-scheme-in-go ../little-scheme/scm.scm \
-> < ../little-scheme/examples/nqueens.scm 
+$ ./little-scheme-in-go ../little-scheme/scm.scm < ../little-scheme/examples/nqu
+eens.scm 
 ((5 3 1 6 4 2) (4 1 5 2 6 3) (3 6 2 5 1 4) (2 4 6 1 3 5))
-
-real	0m1.611s
-user	0m1.705s
-sys	0m0.025s
 $ 
 ```
 
@@ -77,8 +78,10 @@ after running the script.
 $ ./little-scheme-in-go ../little-scheme/examples/fib90.scm -
 2880067194370816120
 > (globals)
-(apply call/cc globals = < * - + symbol? eof-object? read newline display list n
-ot null? pair? eqv? eq? cons cdr car fibonacci)
+(apply call/cc globals error = < * - + symbol? eof-object? read newline display 
+list not null? pair? eqv? eq? cons cdr car fibonacci)
+> (fibonacci 16)
+987
 > (fibonacci 1000)
 43466557686937456435688527675040625802564660517371780402481729089536555417949051
 89040387984007925516929592259308032263477520968962323987332247116164299644090653

@@ -1,10 +1,9 @@
-// A little Scheme in Go 1.12 v1.1 H31.03.03/R01.07.22 by SUZUKI Hisao
+// A little Scheme in Go 1.12 v1.1 H31.03.03/R01.07.31 by SUZUKI Hisao
 package main
 
 import (
 	"bufio"
 	"fmt"
-	"github.com/nukata/goarith"
 	"io"
 	"math/big"
 	"os"
@@ -13,8 +12,11 @@ import (
 	"sync"
 	"text/scanner"
 	"unicode"
+
+	"github.com/nukata/goarith"
 )
 
+// Any represents any type.
 type Any = interface{}
 
 //----------------------------------------------------------------------
@@ -25,7 +27,8 @@ type Cell struct {
 	Cdr Any
 }
 
-var Nil *Cell = nil
+// Nil represents the empty list constant: the zero value of *Cell.
+var Nil *Cell
 
 // Length returns the length of the list.
 func (j *Cell) Length() int {
@@ -41,7 +44,7 @@ func (j *Cell) Length() int {
 // Symbol represents Scheme's symbol.
 type Symbol string
 
-// The mapping from string to *Symbol
+// Symbols is the mapping from string to *Symbol.
 var Symbols sync.Map
 
 // Intern interns a name as a symbol.
@@ -51,14 +54,14 @@ func Intern(name string) *Symbol {
 	return sym.(*Symbol)
 }
 
-var Quote = Intern("quote")
-var If = Intern("if")
-var Begin = Intern("begin")
-var Lambda = Intern("lambda")
-var Define = Intern("define")
-var SetQ = Intern("set!")
-var Apply = Intern("apply")
-var CallCC = Intern("call/cc")
+var quoteSym = Intern("quote")
+var ifSym = Intern("if")
+var beginSym = Intern("begin")
+var lambdaSym = Intern("lambda")
+var defineSym = Intern("define")
+var setQSym = Intern("set!")
+var applySym = Intern("apply")
+var callCCSym = Intern("call/cc")
 
 //----------------------------------------------------------------------
 
@@ -313,8 +316,8 @@ func init() {
 				j = &Cell{e.Sym, j}
 			}
 			return j
-		}, &Environment{CallCC, CallCC,
-			&Environment{Apply, Apply,
+		}, &Environment{callCCSym, callCCSym,
+			&Environment{applySym, applySym,
 				nil}})))))))))))))))))))))}
 }
 
@@ -333,7 +336,7 @@ const (
 	RestoreEnvOp
 )
 
-// Names of continuation operators
+// OpStr is a list of names of continuation operators
 var OpStr = [...]string{
 	"Then", "Begin", "Define", "SetQ", "Apply",
 	"ApplyFun", "EvalArg", "PushArgs", "RestoreEnv",
@@ -366,24 +369,24 @@ func Evaluate(exp Any, env *Environment) (result Any, err error) {
 			case *Cell:
 				kar, kdr := x.Car, x.Cdr.(*Cell)
 				switch kar {
-				case Quote: // (quote e)
+				case quoteSym: // (quote e)
 					exp = kdr.Car
 					break Loop1
-				case If: // (if e1 e2 e3) or (if e1 e2)
+				case ifSym: // (if e1 e2 e3) or (if e1 e2)
 					exp = kdr.Car
 					k.Push(ThenOp, kdr.Cdr)
-				case Begin: // (begin e...)
+				case beginSym: // (begin e...)
 					exp = kdr.Car
 					if kdr.Cdr != Nil {
 						k.Push(BeginOp, kdr.Cdr)
 					}
-				case Lambda: // (lambda (v...) e...)
+				case lambdaSym: // (lambda (v...) e...)
 					exp = &Closure{kdr.Car.(*Cell), kdr.Cdr.(*Cell), env}
 					break Loop1
-				case Define: // (define var e)
+				case defineSym: // (define var e)
 					exp = kdr.Cdr.(*Cell).Car
 					k.Push(DefineOp, kdr.Car.(*Symbol))
-				case SetQ: // (set! var e)
+				case setQSym: // (set! var e)
 					pair := env.LookFor(kdr.Car.(*Symbol))
 					exp = kdr.Cdr.(*Cell).Car
 					k.Push(SetQOp, pair)
@@ -476,10 +479,10 @@ func Evaluate(exp Any, env *Environment) (result Any, err error) {
 func applyFunction(fun Any, arg *Cell, k *Continuation, env *Environment) (
 	Any, *Environment) {
 	for {
-		if fun == CallCC {
+		if fun == callCCSym {
 			pushRestoreEnv(k, env)
 			fun, arg = arg.Car, &Cell{k.Copy(), Nil}
-		} else if fun == Apply {
+		} else if fun == applySym {
 			fun, arg = arg.Car, arg.Cdr.(*Cell).Car.(*Cell)
 		} else {
 			break
@@ -626,7 +629,7 @@ func ReadFromTokens(tokens *[]Any) Any {
 		panic(fmt.Errorf("unexpected ) before %s", Stringify(*tokens, true)))
 	case '\'':
 		e := ReadFromTokens(tokens)
-		return &Cell{Quote, &Cell{e, Nil}} // 'e => (quote e)
+		return &Cell{quoteSym, &Cell{e, Nil}} // 'e => (quote e)
 	}
 	return token
 }
@@ -661,8 +664,8 @@ func Load(fileName string) (ok bool) {
 	return true
 }
 
-var Tokens []Any
-var Lines *bufio.Scanner = bufio.NewScanner(os.Stdin)
+var stdInTokens []Any
+var stdInLines = bufio.NewScanner(os.Stdin)
 
 func splitIntoTokensSafely(src io.Reader) (result []Any, err Any) {
 	defer func() {
@@ -684,8 +687,8 @@ func readFromTokensSafely(tokens *[]Any) (result Any, err Any) {
 func ReadExpression(prompt1 string, prompt2 string) Any {
 	var errorResult Any
 	for {
-		old := Tokens[:]
-		if exp, err := readFromTokensSafely(&Tokens); err == nil {
+		old := stdInTokens[:]
+		if exp, err := readFromTokensSafely(&stdInTokens); err == nil {
 			return exp
 		} else if _, isIndexError := err.(indexError); !isIndexError {
 			errorResult = err
@@ -697,21 +700,21 @@ func ReadExpression(prompt1 string, prompt2 string) Any {
 		} else {
 			fmt.Print(prompt2)
 		}
-		if !Lines.Scan() {
-			if err := Lines.Err(); err != nil {
+		if !stdInLines.Scan() {
+			if err := stdInLines.Err(); err != nil {
 				panic(err)
 			}
 			return scanner.EOF
 		}
-		line := Lines.Text()
+		line := stdInLines.Text()
 		newTokens, err := splitIntoTokensSafely(strings.NewReader(line))
 		if err != nil {
 			errorResult = err
 			break
 		}
-		Tokens = append(old, newTokens...)
+		stdInTokens = append(old, newTokens...)
 	}
-	Tokens = make([]Any, 0) // Discard the erroneous tokens.
+	stdInTokens = make([]Any, 0) // Discard the erroneous tokens.
 	return fmt.Errorf("syntax error: %v", errorResult)
 }
 

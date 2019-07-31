@@ -9,10 +9,10 @@ It implements the same language as
 
 and also their meta-circular interpreter, 
 [little-scheme](https://github.com/nukata/little-scheme)
-in circa 700 lines of Go 1.12
+in circa 750 lines of Go 1.12
 (and it uses an arithmetic package,
 [goarith](https://github.com/nukata/goarith), which has circa 600 lines
-of Go; it has _circa 1300 lines of Go in total_).
+of Go; it has _circa 1350 lines of Go in total_).
 
 
 As a Scheme implementation, 
@@ -106,8 +106,60 @@ list not null? pair? eqv? eq? cons cdr car fibonacci)
 | continuations                       | `type Continuation []Step`          |
 
 
-`Symbol` is defined as `type Symbol string` and its values will be
-interned with `sync.Map`.
+- `Symbol` is defined as `type Symbol string` and its values will be
+  interned with `sync.Map`.
 
-For expression types and built-in procedures, see
-[little-scheme-in-python](https://github.com/nukata/little-scheme-in-python).
+
+### Expression types
+
+- _v_  [variable reference]
+
+- (_e0_ _e1_...)  [procedure call]
+
+- (`quote` _e_)  
+  `'`_e_ [transformed into (`quote` _e_) when read]
+
+- (`if` _e1_ _e2_ _e3_)  
+  (`if` _e1_ _e2_)
+
+- (`begin` _e_...)
+
+- (`lambda` (_v_...) _e_...)
+
+- (`set!` _v_ _e_)
+
+- (`define` _v_ _e_)
+
+For simplicity, this Scheme treats (`define` _v_ _e_) as an expression type.
+
+
+### Built-in procedures
+
+|                      |                          |                     |
+|:---------------------|:-------------------------|:--------------------|
+| (`car` _lst_)        | (`not` _x_)              | (`eof-object?` _x_) |
+| (`cdr` _lst_)        | (`list` _x_ ...)         | (`symbol?` _x_)     |
+| (`cons` _x_ _y_)     | (`call/cc` _fun_)        | (`+` _x_ _y_)       |
+| (`eq?` _x_ _y_)      | (`apply` _fun_ _arg_)    | (`-` _x_ _y_)       |
+| (`eqv?` _x_ _y_)     | (`display` _x_)          | (`*` _x_ _y_)       |
+| (`pair?` _x_)        | (`newline`)              | (`<` _x_ _y_)       |
+| (`null?` _x_)        | (`read`)                 | (`=` _x_ _y_)       |
+|                      | (`error` _reason_ _arg_) | (`globals`)         |
+
+- `(error` _reason_ _arg_`)` panics with an `ErrorString`
+  "`Error:` _reason_`:` _arg_".
+  The type `ErrorString` is defined as `type ErrorString string`.
+  The procedure `error`
+  is based on [SRFI-23](https://srfi.schemers.org/srfi-23/srfi-23.html).
+
+- `(globals)` returns a list of keys of the global environment.
+  It is not in the standard.
+
+See [`GlobalEnv`](scm.go#L249-L321)
+in `scm.go` for the implementation of the procedures
+except `call/cc` and `apply`.  
+`call/cc` and `apply` are implemented particularly at 
+[`applyFunction`](scm.go#L478-L511) in `scm.go`.
+
+
+I hope this serves as a model of how to write a Scheme interpreter in Go.

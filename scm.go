@@ -1,4 +1,4 @@
-// A little Scheme in Go 1.12 v1.1 H31.03.03/R01.07.31 by SUZUKI Hisao
+// A little Scheme in Go 1.12 v1.1 H31.03.03/R01.08.02 by SUZUKI Hisao
 package main
 
 import (
@@ -338,8 +338,15 @@ const (
 
 // OpStr is a list of names of continuation operators
 var OpStr = [...]string{
-	"Then", "Begin", "Define", "SetQ", "Apply",
-	"ApplyFun", "EvalArg", "PushArgs", "RestoreEnv",
+	"Then",
+	"Begin",
+	"Define",
+	"SetQ",
+	"Apply",
+	"ApplyFun",
+	"EvalArg",
+	"ConsArgs",
+	"RestoreEnv",
 }
 
 // Evaluate evaluates an expresssion in an environment.

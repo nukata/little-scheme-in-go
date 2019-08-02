@@ -159,7 +159,7 @@ See [`GlobalEnv`](scm.go#L249-L321)
 in `scm.go` for the implementation of the procedures
 except `call/cc` and `apply`.  
 `call/cc` and `apply` are implemented particularly at 
-[`applyFunction`](scm.go#L478-L511) in `scm.go`.
+[`applyFunction`](scm.go#L485-L518) in `scm.go`.
 
 
 I hope this serves as a model of how to write a Scheme interpreter in Go.

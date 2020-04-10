@@ -1,4 +1,4 @@
-// A little Scheme in Go 1.12 v1.1 H31.03.03/R01.08.02 by SUZUKI Hisao
+// A Little Scheme in Go 1.14, v1.2 H31.03.03/R02.04.10 by SUZUKI Hisao
 package main
 
 import (
@@ -160,7 +160,13 @@ func (s ErrorString) Error() string {
 }
 
 // Void means the expresssion has no value.
-var Void = &struct{}{}
+var Void = &struct{ string }{"void"}
+
+// CallCCVal represents the call/cc procedure.
+var CallCCVal = &struct{ string }{"call/cc"}
+
+// ApplyVal represents the apply procedure.
+var ApplyVal = &struct{ string }{"apply"}
 
 // Stringify returns the string representation of an expression.
 // Strings in the expression will be quoted if quote is true.
@@ -174,6 +180,10 @@ func Stringify(exp Any, quote bool) (result string) {
 		return "#<EOF>"
 	case Void:
 		return "#<VOID>"
+	case CallCCVal:
+		return "#<call/cc>"
+	case ApplyVal:
+		return "#<apply>"
 	}
 	switch x := exp.(type) {
 	case *Cell:
@@ -246,6 +256,37 @@ func c(name string, arity int, fun func(*Cell) Any,
 }
 
 func init() {
+	GlobalEnv =
+		c("+", 2, func(x *Cell) Any {
+			a, b := x.Car, x.Cdr.(*Cell).Car
+			return goarith.AsNumber(a).Add(goarith.AsNumber(b))
+		}, c("-", 2, func(x *Cell) Any {
+			a, b := x.Car, x.Cdr.(*Cell).Car
+			return goarith.AsNumber(a).Sub(goarith.AsNumber(b))
+		}, c("*", 2, func(x *Cell) Any {
+			a, b := x.Car, x.Cdr.(*Cell).Car
+			return goarith.AsNumber(a).Mul(goarith.AsNumber(b))
+		}, c("<", 2, func(x *Cell) Any {
+			a, b := x.Car, x.Cdr.(*Cell).Car
+			return goarith.AsNumber(a).Cmp(goarith.AsNumber(b)) < 0
+		}, c("=", 2, func(x *Cell) Any {
+			a, b := x.Car, x.Cdr.(*Cell).Car
+			return goarith.AsNumber(a).Cmp(goarith.AsNumber(b)) == 0
+		}, c("number?", 1, func(x *Cell) Any {
+			return goarith.AsNumber(x.Car) != nil
+		}, c("error", 2, func(x *Cell) Any {
+			a, b := x.Car, x.Cdr.(*Cell).Car
+			s := fmt.Sprintf("Error: %s: %s",
+				Stringify(a, false), Stringify(b, true))
+			panic(ErrorString(s))
+		}, c("globals", 0, func(x *Cell) Any {
+			j := Nil // Take Next initially to skip the frame top.
+			for e := GlobalEnv.Next; e != nil; e = e.Next {
+				j = &Cell{e.Sym, j}
+			}
+			return j
+		}, nil))))))))
+
 	GlobalEnv = &Environment{nil, nil, // frame top
 		c("car", 1, func(x *Cell) Any {
 			return x.Car.(*Cell).Car
@@ -255,19 +296,6 @@ func init() {
 			return &Cell{x.Car, x.Cdr.(*Cell).Car}
 		}, c("eq?", 2, func(x *Cell) Any {
 			return x.Car == x.Cdr.(*Cell).Car
-		}, c("eqv?", 2, func(x *Cell) Any {
-			a, b := x.Car, x.Cdr.(*Cell).Car
-			if a == b {
-				return true
-			}
-			if x := goarith.AsNumber(a); x != nil {
-				if y := goarith.AsNumber(b); y != nil {
-					if x.Cmp(y) == 0 {
-						return true
-					}
-				}
-			}
-			return false
 		}, c("pair?", 1, func(x *Cell) Any {
 			c, ok := x.Car.(*Cell)
 			return ok && c != Nil
@@ -290,35 +318,9 @@ func init() {
 		}, c("symbol?", 1, func(x *Cell) Any {
 			_, ok := x.Car.(*Symbol)
 			return ok
-		}, c("+", 2, func(x *Cell) Any {
-			a, b := x.Car, x.Cdr.(*Cell).Car
-			return goarith.AsNumber(a).Add(goarith.AsNumber(b))
-		}, c("-", 2, func(x *Cell) Any {
-			a, b := x.Car, x.Cdr.(*Cell).Car
-			return goarith.AsNumber(a).Sub(goarith.AsNumber(b))
-		}, c("*", 2, func(x *Cell) Any {
-			a, b := x.Car, x.Cdr.(*Cell).Car
-			return goarith.AsNumber(a).Mul(goarith.AsNumber(b))
-		}, c("<", 2, func(x *Cell) Any {
-			a, b := x.Car, x.Cdr.(*Cell).Car
-			return goarith.AsNumber(a).Cmp(goarith.AsNumber(b)) < 0
-		}, c("=", 2, func(x *Cell) Any {
-			a, b := x.Car, x.Cdr.(*Cell).Car
-			return goarith.AsNumber(a).Cmp(goarith.AsNumber(b)) == 0
-		}, c("error", 2, func(x *Cell) Any {
-			a, b := x.Car, x.Cdr.(*Cell).Car
-			s := fmt.Sprintf("Error: %s: %s",
-				Stringify(a, false), Stringify(b, true))
-			panic(ErrorString(s))
-		}, c("globals", 0, func(x *Cell) Any {
-			j := Nil // Take Next initially to skip the frame top.
-			for e := GlobalEnv.Next; e != nil; e = e.Next {
-				j = &Cell{e.Sym, j}
-			}
-			return j
-		}, &Environment{callCCSym, callCCSym,
-			&Environment{applySym, applySym,
-				nil}})))))))))))))))))))))}
+		}, &Environment{callCCSym, CallCCVal,
+			&Environment{applySym, ApplyVal,
+				GlobalEnv}})))))))))))))}
 }
 
 //----------------------------------------------------------------------
@@ -486,10 +488,10 @@ func Evaluate(exp Any, env *Environment) (result Any, err error) {
 func applyFunction(fun Any, arg *Cell, k *Continuation, env *Environment) (
 	Any, *Environment) {
 	for {
-		if fun == callCCSym {
+		if fun == CallCCVal {
 			pushRestoreEnv(k, env)
 			fun, arg = arg.Car, &Cell{k.Copy(), Nil}
-		} else if fun == applySym {
+		} else if fun == ApplyVal {
 			fun, arg = arg.Car, arg.Cdr.(*Cell).Car.(*Cell)
 		} else {
 			break
